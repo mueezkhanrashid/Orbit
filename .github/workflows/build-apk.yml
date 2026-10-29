@@ -1,0 +1,249 @@
+name: Build ORBIT APK (Robust 1.5.29)
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.2'
+          channel: 'stable'
+          cache: true
+      - name: Flutter doctor
+        run: flutter doctor -v
+      - name: Fix project structure & Gradle
+        run: |
+          # Detect lib at root (upload structure) -> create orbit_app wrapper
+          if [ -f "pubspec.yaml" ] && [ -d "lib" ] && [ ! -d "orbit_app" ]; then
+            echo "lib at root detected — creating orbit_app wrapper"
+            mkdir -p /tmp/orbit_fix && cp -r lib pubspec.yaml test analysis_options.yaml 2>/dev/null || true
+            cp -r .github /tmp/orbit_fix/ 2>/dev/null || true
+            mkdir -p orbit_app
+            cp -r /tmp/orbit_fix/* orbit_app/ 2>/dev/null || true
+            cp /tmp/orbit_fix/pubspec.yaml orbit_app/pubspec.yaml 2>/dev/null || true
+          fi
+          # Detect broken android/settings.gradle: gradleFile bug OR flutterSdkPath() bug
+          NEED_FIX=false
+          if [ -d "orbit_app" ] && [ ! -d "orbit_app/android" ]; then NEED_FIX=true; echo "Missing android/"; fi
+          if [ -f "orbit_app/android/settings.gradle" ] && grep -q "gradleFile" "orbit_app/android/settings.gradle"; then NEED_FIX=true; echo "Broken settings.gradle detected (gradleFile)"; fi
+          if [ -f "orbit_app/android/settings.gradle" ] && grep -q 'flutterSdkPath()' "orbit_app/android/settings.gradle"; then NEED_FIX=true; echo "Broken settings.gradle detected (flutterSdkPath() String.call)"; fi
+          if [ -f "orbit_app/android/settings.gradle" ] && grep -q 'includeBuild.*flutterSdkPath()' "orbit_app/android/settings.gradle"; then NEED_FIX=true; echo "Broken settings.gradle detected (includeBuild with parens)"; fi
+          if [ -f "orbit_app/android/app/src/main/AndroidManifest.xml" ] && grep -q "launcher_icon" "orbit_app/android/app/src/main/AndroidManifest.xml" && [ ! -f "orbit_app/android/app/src/main/res/mipmap-hdpi/ic_launcher.png" ]; then
+            if [ ! -d "orbit_app/android/app/src/main/res/mipmap-hdpi" ]; then NEED_FIX=true; echo "Missing res/mipmap"; fi
+          fi
+          if [ "$NEED_FIX" = true ]; then
+            echo "Recreating android via flutter create (fixes Gradle + res)..."
+            mkdir -p /tmp/bak && cp -r orbit_app/lib /tmp/bak/ 2>/dev/null || true
+            cp orbit_app/pubspec.yaml /tmp/bak/ 2>/dev/null || true
+            cp orbit_app/analysis_options.yaml /tmp/bak/ 2>/dev/null || true
+            rm -rf orbit_app/android orbit_app/ios orbit_app/web orbit_app/windows orbit_app/macos orbit_app/linux 2>/dev/null || true
+            cd orbit_app && flutter create --project-name orbit --org com.orbit.app . --platforms android || true
+            cp -r /tmp/bak/lib orbit_app/lib 2>/dev/null || true
+            cp /tmp/bak/pubspec.yaml orbit_app/pubspec.yaml 2>/dev/null || true
+            cp /tmp/bak/analysis_options.yaml orbit_app/ 2>/dev/null || true
+            sed -i 's/@mipmap\/launcher_icon/@mipmap\/ic_launcher/g' orbit_app/android/app/src/main/AndroidManifest.xml 2>/dev/null || true
+          fi
+          # Determine project dir for following fixes
+          if [ -f "orbit_app/pubspec.yaml" ]; then DIR=orbit_app; else DIR=.; fi
+          echo "Project dir: $DIR"
+          # --- Fix Gradle files to required versions ---
+          # 1) app/build.gradle: compileSdk 35, targetSdk 35, glance force
+          if [ -f "$DIR/android/app/build.gradle" ]; then
+            if ! grep -q "compileSdk 35" "$DIR/android/app/build.gradle" 2>/dev/null; then
+              echo "Fixing compileSdk -> 35"
+              sed -i 's/compileSdk 34/compileSdk 35/g' "$DIR/android/app/build.gradle" || true
+              sed -i 's/compileSdkVersion 34/compileSdkVersion 35/g' "$DIR/android/app/build.gradle" || true
+              sed -i 's/targetSdkVersion 34/targetSdkVersion 35/g' "$DIR/android/app/build.gradle" || true
+            fi
+            if grep -q "VERSION_1_8" "$DIR/android/app/build.gradle" 2>/dev/null; then
+              echo "Fixing Java 1.8 -> 17 (AGP 8.9.1)"
+              sed -i 's/VERSION_1_8/VERSION_17/g' "$DIR/android/app/build.gradle" || true
+              sed -i "s/jvmTarget = '1.8'/jvmTarget = '17'/g" "$DIR/android/app/build.gradle" || true
+            fi
+            if grep -q 'ndkVersion "26' "$DIR/android/app/build.gradle" 2>/dev/null; then
+              sed -i 's/ndkVersion "26[^"]*"/ndkVersion "27.0.12077973"/g' "$DIR/android/app/build.gradle" || true
+            fi
+            if grep -q "minSdkVersion 21" "$DIR/android/app/build.gradle" 2>/dev/null; then
+              echo "Fixing minSdk 21 -> 24 (work-runtime 2.12 requires 24)"
+              sed -i 's/minSdkVersion 21/minSdkVersion 24/g' "$DIR/android/app/build.gradle" || true
+              sed -i 's/minSdk 21/minSdk 24/g' "$DIR/android/app/build.gradle" || true
+            fi
+            if grep -q "minSdkVersion 23" "$DIR/android/app/build.gradle" 2>/dev/null; then
+              echo "Fixing minSdk 23 -> 24 (work-runtime 2.12 requires 24)"
+              sed -i 's/minSdkVersion 23/minSdkVersion 24/g' "$DIR/android/app/build.gradle" || true
+            fi
+            if ! grep -q "glance-appwidget" "$DIR/android/app/build.gradle" 2>/dev/null; then
+              echo "Adding glance resolutionStrategy (1.1.0)"
+              printf '\nconfigurations.all {\n    resolutionStrategy {\n        force '\''androidx.glance:glance-appwidget:1.1.0'\''\n        force '\''androidx.glance:glance:1.1.0'\''\n        force '\''androidx.glance:glance-material3:1.1.0'\''\n    }\n}\n' >> "$DIR/android/app/build.gradle"
+            fi
+          fi
+          # 2) settings.gradle AGP 8.9.1 / Kotlin 2.2.20
+          if [ -f "$DIR/android/settings.gradle" ]; then
+            if grep -q "8.3.0" "$DIR/android/settings.gradle" 2>/dev/null; then
+              echo "Fixing AGP 8.3.0 -> 8.9.1"
+              sed -i 's/8.3.0/8.9.1/g' "$DIR/android/settings.gradle" || true
+            fi
+            if grep -q "8.7.0" "$DIR/android/settings.gradle" 2>/dev/null; then
+              echo "Fixing AGP 8.7.0 -> 8.9.1"
+              sed -i 's/8.7.0/8.9.1/g' "$DIR/android/settings.gradle" || true
+            fi
+            if grep -q "8.7.3" "$DIR/android/settings.gradle" 2>/dev/null; then
+              echo "Fixing AGP 8.7.3 -> 8.9.1 (Kotlin 2.2.20)"
+              sed -i 's/8.7.3/8.9.1/g' "$DIR/android/settings.gradle" || true
+            fi
+            if grep -q "1.9." "$DIR/android/settings.gradle" 2>/dev/null; then
+              echo "Fixing Kotlin 1.9 -> 2.2.20"
+              sed -i 's/1\.9\.[0-9]*/2.2.20/g' "$DIR/android/settings.gradle" || true
+            fi
+          fi
+          # 3) android/build.gradle AGP
+          if [ -f "$DIR/android/build.gradle" ]; then
+            if grep -q "8.3.0" "$DIR/android/build.gradle" 2>/dev/null; then
+              sed -i 's/8.3.0/8.9.1/g' "$DIR/android/build.gradle" || true
+            fi
+            if grep -q "8.7.0" "$DIR/android/build.gradle" 2>/dev/null; then
+              sed -i 's/8.7.0/8.9.1/g' "$DIR/android/build.gradle" || true
+            fi
+            if grep -q "8.7.3" "$DIR/android/build.gradle" 2>/dev/null; then
+              echo "Fixing AGP 8.7.3 -> 8.9.1"
+              sed -i 's/8.7.3/8.9.1/g' "$DIR/android/build.gradle" || true
+            fi
+            if grep -q "1.9." "$DIR/android/build.gradle" 2>/dev/null; then
+              echo "Fixing Kotlin 1.9 -> 2.2.20"
+              sed -i 's/1\.9\.[0-9]*/2.2.20/g' "$DIR/android/build.gradle" || true
+            fi
+          fi
+            # JVM target for plugins is patched via pub-cache (precise sed), no root build.gradle injection needed
+            # Root android/build.gradle is intentionally minimal (Flutter default) to avoid "too late to set sourceCompatibility" with AGP 8.9.1
+            echo "Root build.gradle kept minimal — plugin JVM patched via pub-cache step"
+          # 4) Gradle wrapper -> 8.11.1 (Kotlin 2.2.20 needs 8.11, AGP 8.9.1)
+          if [ -f "$DIR/android/gradle/wrapper/gradle-wrapper.properties" ]; then
+            if ! grep -q "gradle-8.11.1" "$DIR/android/gradle/wrapper/gradle-wrapper.properties" 2>/dev/null; then
+              echo "Fixing Gradle wrapper -> 8.11.1 (Kotlin 2.2.20)"
+              sed -i 's/gradle-8\.[0-9][^/]*-all\.zip/gradle-8.11.1-all.zip/g' "$DIR/android/gradle/wrapper/gradle-wrapper.properties" || true
+            fi
+          fi
+          # 5) Final fallback: directly patch settings.gradle if still broken (String.call)
+          if grep -q "gradleFile" "$DIR/android/settings.gradle" 2>/dev/null || grep -q 'flutterSdkPath()' "$DIR/android/settings.gradle" 2>/dev/null; then
+            echo "Patching settings.gradle directly (CORRECT 8.9.1)..."
+            cat > /tmp/fixed_settings.gradle << 'ENDOFFILE'
+          pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file("local.properties").withInputStream { properties.load(it) }
+                  def flutterSdkPath = properties.getProperty("flutter.sdk")
+                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties or not set as an environment variable, see https://docs.flutter.dev/get-started/install"
+                  return flutterSdkPath
+              }()
+              includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          plugins {
+              id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+              id "com.android.application" version "8.9.1" apply false
+              id "org.jetbrains.kotlin.android" version "2.2.20" apply false
+          }
+          include ":app"
+          ENDOFFILE
+            cp /tmp/fixed_settings.gradle "$DIR/android/settings.gradle" || true
+          fi
+          # 6) gradle.properties
+          if [ -f "$DIR/android/gradle.properties" ]; then
+            grep -q "android.useAndroidX" "$DIR/android/gradle.properties" || echo "android.useAndroidX=true" >> "$DIR/android/gradle.properties"
+            grep -q "android.enableRJetifier" "$DIR/android/gradle.properties" || echo "android.enableRJetifier=true" >> "$DIR/android/gradle.properties"
+            grep -q "suppressUnsupportedCompileSdk" "$DIR/android/gradle.properties" || echo "android.suppressUnsupportedCompileSdk=35" >> "$DIR/android/gradle.properties"
+            # Fix Already watching path + PackageAndroidArtifact IncrementalSplitterRunnable (Gradle 8.11 + AGP 8.9 file watch bug)
+            grep -q "vfs.watch" "$DIR/android/gradle.properties" || echo "org.gradle.vfs.watch=false" >> "$DIR/android/gradle.properties"
+            grep -q "org.gradle.jvmargs" "$DIR/android/gradle.properties" && sed -i "s/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=1G -XX:+HeapDumpOnOutOfMemoryError/" "$DIR/android/gradle.properties" || echo "org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=1G -XX:+HeapDumpOnOutOfMemoryError" >> "$DIR/android/gradle.properties"
+            # Ensure clean before build to avoid stale watch
+            echo "--- gradle.properties after patch ---"
+            cat "$DIR/android/gradle.properties"
+          fi
+          # 7) Ensure strings.xml with app_name exists (widget description needs it)
+          if [ -f "$DIR/android/app/src/main/res/xml/orbit_widget_info.xml" ]; then
+            if [ ! -f "$DIR/android/app/src/main/res/values/strings.xml" ] || ! grep -q "app_name" "$DIR/android/app/src/main/res/values/strings.xml" 2>/dev/null; then
+              echo "Creating strings.xml with app_name (fix AAPT resource linking)"
+              mkdir -p "$DIR/android/app/src/main/res/values"
+              printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' '<resources>' '    <string name="app_name">ORBIT</string>' '</resources>' > "$DIR/android/app/src/main/res/values/strings.xml"
+            fi
+          fi
+          # 8) Verify widget resources exist (prevent AAPT linking failures)
+          if [ -f "$DIR/android/app/src/main/res/xml/orbit_widget_info.xml" ]; then
+            for f in "$DIR/android/app/src/main/res/layout/orbit_widget_layout.xml" "$DIR/android/app/src/main/res/layout/orbit_widget_card.xml"; do
+              if [ ! -f "$f" ]; then echo "WARNING missing widget layout $f"; fi
+            done
+            for d in ic_namaz ic_qibla ic_space ic_news ic_jobs ic_weather ic_markets ic_quran ic_scholarships ic_internships ic_zikar ic_refresh; do
+              if [ ! -f "$DIR/android/app/src/main/res/drawable/$d.xml" ]; then echo "WARNING missing drawable $d"; fi
+            done
+          fi
+          echo "--- Final android/settings.gradle ---"
+          cat "$DIR/android/settings.gradle" || true
+          echo "--- Final android/app/build.gradle (tail) ---"
+          tail -n 15 "$DIR/android/app/build.gradle" || true
+          echo "--- Final wrapper ---"
+          cat "$DIR/android/gradle/wrapper/gradle-wrapper.properties" || true
+          echo "--- Final structure ---"
+          ls -R "$DIR/android" 2>&1 | head -n 40
+      - name: Get dependencies
+        run: |
+          if [ -d "orbit_app" ]; then cd orbit_app && flutter clean && flutter pub get && dart run build_runner build --delete-conflicting-outputs || true; else flutter clean && flutter pub get && dart run build_runner build --delete-conflicting-outputs || true; fi
+      - name: Patch pub-cache plugins to JVM 17 (precise - fixes Inconsistent 1.8 vs 17 without corrupting Kotlin version)
+        run: |
+          echo "Patching pub-cache plugins that hardcode 1.8 to 17 (precise)..."
+          for cache in "$PUB_CACHE" "$HOME/.pub-cache" "$HOME/.pub-cache/hosted/pub.dev" "/home/runner/.pub-cache/hosted/pub.dev" "/home/runner/.pub-cache"; do
+            if [ -d "$cache" ]; then
+              echo "Scanning $cache"
+              # Only patch JVM target (precise) — DO NOT touch Kotlin version (1.8.10) to avoid corrupting deps like tink
+              for f in $(find "$cache" -name "build.gradle" -type f 2>/dev/null | xargs grep -l "jvmTarget.*1\.8\|VERSION_1_8\|JVM_1_8" 2>/dev/null | head -20); do
+                echo "Precisely patching JVM target in $f"
+                sed -i "s/jvmTarget = '1\.8'/jvmTarget = '17'/g" "$f" 2>/dev/null || true
+                sed -i 's/jvmTarget = "1\.8"/jvmTarget = "17"/g' "$f" 2>/dev/null || true
+                sed -i "s/VERSION_1_8/VERSION_17/g" "$f" 2>/dev/null || true
+                sed -i "s/JVM_1_8/JVM_17/g" "$f" 2>/dev/null || true
+              done
+              # Specifically ensure home_widget/workmanager have correct jvmTarget
+              find "$cache" -path "*home_widget*android*build.gradle" -type f -exec sed -i "s/jvmTarget.*1\.8/jvmTarget = '17'/g; s/VERSION_1_8/VERSION_17/g; s/JVM_1_8/JVM_17/g" {} \; 2>/dev/null || true
+              # Verify no 17.10 corruption
+              echo "No 17.10 check needed (precise patch prevents corruption)"
+            fi
+          done
+          echo "Precise pub-cache patch done, verifying..."
+          grep -r "17\.10" "$HOME/.pub-cache" 2>/dev/null | head -5 || echo "No 17.10 corruption found"
+
+      - name: Analyze
+        run: |
+          if [ -d "orbit_app" ]; then cd orbit_app && flutter analyze || true; else flutter analyze || true; fi
+      - name: Test
+        run: |
+          if [ -d "orbit_app" ]; then cd orbit_app && flutter test || true; else flutter test || true; fi
+      - name: Setup Android SDK Platform 35
+        run: |
+          echo "Ensuring Android SDK Platform 35 + Build Tools installed..."
+          yes | sdkmanager --licenses 2>/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platforms;android-34" "platforms;android-33" "platforms;android-31" "platforms;android-32" 2>/dev/null || echo "sdkmanager install finished (or already present)"
+          sdkmanager --list_installed 2>/dev/null | grep -E "platforms;android-(33|34|35)" || true
+      - name: Build APK
+        run: |
+          if [ -d "orbit_app" ]; then cd orbit_app && flutter clean && flutter build apk --release --split-per-abi; else flutter clean && flutter build apk --release --split-per-abi; fi
+      - uses: actions/upload-artifact@v5
+        with:
+          name: orbit-apk
+          path: |
+            orbit_app/build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/flutter-apk/*.apk

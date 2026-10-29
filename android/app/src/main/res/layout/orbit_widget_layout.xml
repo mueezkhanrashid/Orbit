@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ORBIT 1.5 — 4×2 swipeable StackView, flat 1px #e8e8e8, quiet 3%, tabular — MODERN FLAT ICONS -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F5F5F3"
+    android:padding="8dp">
+
+    <!-- Header: O monogram + ORBIT • Swipe + refresh -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:background="#0E4C46"
+            android:text="O"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:gravity="center"
+            android:fontFamily="sans-serif-medium" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingStart="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ORBIT Swipeable"
+                android:textColor="#111111"
+                android:textSize="11sp"
+                android:fontFamily="sans-serif-medium" />
+
+            <TextView
+                android:id="@+id/widget_footer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="6 cards Swipe 14:32"
+                android:textColor="#8A8A8A"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/widget_refresh"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="#FFFFFF"
+            android:padding="6dp"
+            android:src="@drawable/ic_refresh"
+            android:contentDescription="refresh" />
+    </LinearLayout>
+
+    <!-- Swipeable StackView — each card is orbit_widget_card.xml -->
+    <StackView
+        android:id="@+id/widget_stack"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:loopViews="true" />
+
+    <TextView
+        android:id="@+id/widget_empty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="Pick cards in ORBIT Widget"
+        android:textColor="#8A8A8A"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
+    <!-- Footer hint -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="4dp"
+        android:text="Swipe left or right  Tap to open"
+        android:textColor="#8A8A8A"
+        android:textSize="9sp"
+        android:gravity="center" />
+</LinearLayout>
